@@ -1,0 +1,60 @@
+version: '3.9' # Используем одну из последних версий формата
+
+services:
+  db:
+    image: postgres:14 # Можно выбрать конкретную версию, например 14 или 15
+    container_name: postgres_db_med # Задаем имя контейнера
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/ # Сохраняем данные БД
+    environment:
+      # Берем настройки из .env файла
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432" # Пробрасываем порт для возможного внешнего подключения к БД (например, через DBeaver)
+    healthcheck: # Проверка работоспособности БД
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build: ./backend # Указываем путь к Dockerfile для бэкенда
+    container_name: django_backend_med # Задаем имя контейнера
+    command: python manage.py runserver 0.0.0.0:8000 # Команда для запуска Django dev сервера
+    volumes:
+      - ./backend:/app # Синхронизируем код из локальной папки backend в контейнер
+    ports:
+      - "8000:8000" # Пробрасываем порт Django
+    environment:
+      # Передаем настройки БД и другие переменные
+      POSTGRES_NAME: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_HOST: ${DATABASE_HOST} # Имя сервиса БД в Docker Compose
+      DATABASE_PORT: ${DATABASE_PORT}
+      SECRET_KEY: ${SECRET_KEY}
+      DEBUG: ${DEBUG}
+      PYTHONUNBUFFERED: 1 # Чтобы логи Python сразу выводились в Docker logs
+    depends_on:
+      db: # Указываем, что бэкенд зависит от базы данных
+        condition: service_healthy # Запускать только после успешного healthcheck БД
+
+  frontend:
+    build: ./frontend # Указываем путь к Dockerfile для фронтенда
+    container_name: react_frontend_med # Задаем имя контейнера
+    volumes:
+      - ./frontend:/app # Синхронизируем код
+      - /app/node_modules # Исключаем node_modules из синхронизации (для производительности)
+    ports:
+      - "3000:3000" # Пробрасываем порт React dev сервера
+    environment:
+      - NODE_ENV=development # Указываем окружение
+      - CHOKIDAR_USEPOLLING=true # Иногда помогает для hot-reloading в Docker
+    stdin_open: true # Для интерактивного режима React dev сервера
+    tty: true      # --"--
+
+volumes: # Определяем именованный том для данных PostgreSQL
+  postgres_data:
