@@ -18,7 +18,7 @@ A prototype system for organizing, storing, and analyzing information about the 
 
 1.  **Clone the repository:**
     ```bash
-    git clone <Your repository URL>
+    git clone https://github.com/data-tomic/med_data_system.git
     cd med_data_system
     ```
 
