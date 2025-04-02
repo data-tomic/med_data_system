@@ -1,0 +1,16 @@
+# Django Framework
+django>=4.2,<5.0  # Указываем совместимый диапазон версий
+
+# PostgreSQL adapter
+psycopg2-binary>=2.9,<3.0 # Бинарная версия, не требует сборки
+
+# Django REST framework for API
+djangorestframework>=3.14,<3.16
+
+# CORS headers for allowing frontend requests
+django-cors-headers>=4.0,<5.0
+
+# To read .env file in Django settings (optional but good for local dev)
+python-dotenv>=1.0,<2.0
+
+djangorestframework-simplejwt

@@ -1,19 +1,21 @@
-version: '3.9' # Используем одну из последних версий формата
+# version: '3.9' # Опционально, можно удалить
 
 services:
   db:
-    image: postgres:14 # Можно выбрать конкретную версию, например 14 или 15
+    image: postgres:14 # Укажите конкретную версию PostgreSQL
     container_name: postgres_db_med # Задаем имя контейнера
     volumes:
-      - postgres_data:/var/lib/postgresql/data/ # Сохраняем данные БД
+      # Используем именованный том для сохранения данных БД
+      - postgres_data:/var/lib/postgresql/data/
     environment:
-      # Берем настройки из .env файла
+      # Загружаем настройки БД из файла .env
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432" # Пробрасываем порт для возможного внешнего подключения к БД (например, через DBeaver)
-    healthcheck: # Проверка работоспособности БД
+      # Пробрасываем порт БД для возможного внешнего доступа
+      - "5432:5432"
+    healthcheck: # Проверка готовности БД перед запуском backend
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
@@ -21,40 +23,46 @@ services:
       start_period: 10s
 
   backend:
-    build: ./backend # Указываем путь к Dockerfile для бэкенда
-    container_name: django_backend_med # Задаем имя контейнера
-    command: python manage.py runserver 0.0.0.0:8000 # Команда для запуска Django dev сервера
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: django_backend_med
+    # Команда для запуска Django development сервера
+    command: python manage.py runserver 0.0.0.0:8000
+    # Монтируем локальный код для удобства разработки бэкенда
     volumes:
-      - ./backend:/app # Синхронизируем код из локальной папки backend в контейнер
+      - ./backend:/app
     ports:
-      - "8000:8000" # Пробрасываем порт Django
+      # Пробрасываем порт Django
+      - "8000:8000"
     environment:
-      # Передаем настройки БД и другие переменные
+      # Передаем переменные окружения для настроек Django и БД
       POSTGRES_NAME: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DATABASE_HOST: ${DATABASE_HOST} # Имя сервиса БД в Docker Compose
+      DATABASE_HOST: db # Имя сервиса БД в Docker сети
       DATABASE_PORT: ${DATABASE_PORT}
       SECRET_KEY: ${SECRET_KEY}
       DEBUG: ${DEBUG}
-      PYTHONUNBUFFERED: 1 # Чтобы логи Python сразу выводились в Docker logs
-    depends_on:
-      db: # Указываем, что бэкенд зависит от базы данных
-        condition: service_healthy # Запускать только после успешного healthcheck БД
+      PYTHONUNBUFFERED: 1 # Для корректного вывода логов Python в Docker
+    depends_on: # Запускать только после того, как сервис db станет healthy
+      db:
+        condition: service_healthy
 
-  frontend:
-    build: ./frontend # Указываем путь к Dockerfile для фронтенда
-    container_name: react_frontend_med # Задаем имя контейнера
-    volumes:
-      - ./frontend:/app # Синхронизируем код
-      - /app/node_modules # Исключаем node_modules из синхронизации (для производительности)
+  frontend: # Конфигурация для раздачи продакшен-сборки через Nginx
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile # Используется Dockerfile с multi-stage build и Nginx
+    container_name: react_frontend_med
+    # command: не нужен, т.к. CMD указан в Dockerfile (запуск Nginx)
+    # volumes: не нужны, т.к. код уже скопирован в образ при сборке
     ports:
-      - "3000:3000" # Пробрасываем порт React dev сервера
-    environment:
-      - NODE_ENV=development # Указываем окружение
-      - CHOKIDAR_USEPOLLING=true # Иногда помогает для hot-reloading в Docker
-    stdin_open: true # Для интерактивного режима React dev сервера
-    tty: true      # --"--
+      # Пробрасываем порт 80 Nginx из контейнера на порт 3000 хоста
+      - "3000:80"
+    # development-специфичные environment, stdin_open, tty не нужны
+    restart: unless-stopped # Автоматический перезапуск контейнера
 
-volumes: # Определяем именованный том для данных PostgreSQL
+# Определяем именованный том для данных PostgreSQL
+volumes:
   postgres_data:
+    driver: local # Используем стандартный драйвер
