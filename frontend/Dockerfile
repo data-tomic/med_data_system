@@ -20,6 +20,8 @@ RUN npm install
 # Копируем остальной код приложения
 COPY . .
 
+RUN cat src/pages/PatientDetailPage.tsx
+
 # Собираем приложение для продакшена
 # Переменные окружения для сборки можно передать через --build-arg или .env файлы
 RUN npm run build

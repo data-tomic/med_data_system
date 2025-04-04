@@ -1,11 +1,11 @@
-# Oncology Patient Data Management System (Prototype)
+# Oncology Patient Data Management System (MVP)
 
-A prototype system for organizing, storing, and analyzing information about the course of oncological diseases in patients during remission. Allows tracking indicator dynamics and creating cohorts for research.
+A system for organizing, storing, and analyzing information about the course of oncological diseases in patients during remission. Allows tracking indicator dynamics, managing hospitalization episodes, and creating cohorts for research.
 
 ## Technologies Used
 
-*   **Backend:** Python, Django, Django REST Framework, PostgreSQL
-*   **Frontend:** React, TypeScript, Recharts (for charts), Axios
+*   **Backend:** Python, Django (v4.2+), Django REST Framework, PostgreSQL (v14), DRF Simple JWT (for authentication)
+*   **Frontend:** React (v18), TypeScript, Material UI (MUI v5), Recharts (for charts), Axios, React Router (v6)
 *   **Orchestration:** Docker, Docker Compose
 
 ## Prerequisites
@@ -18,96 +18,85 @@ A prototype system for organizing, storing, and analyzing information about the 
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/data-tomic/med_data_system.git
+    git clone https://github.com/data-tomic/med_data_system.git # Или ваш URL
     cd med_data_system
     ```
 
 2.  **Configure Environment Variables:**
-    *   Copy the `.env.example` file to a new file named `.env`:
+    *   Copy the `.env.example` file (if it exists) to a new file named `.env`. If not, create `.env` based on the required variables below.
         ```bash
-        cp .env.example .env
+        # cp .env.example .env # Если есть .env.example
+        # touch .env # Если .env.example нет
         ```
-    *   **Edit the `.env` file:**
-        *   Replace `YOUR_DJANGO_SECRET_KEY` with a **newly generated** secret key. You can generate one using:
+    *   **Edit the `.env` file** and ensure these variables are set:
+        ```dotenv
+        SECRET_KEY=YOUR_DJANGO_SECRET_KEY_HERE # Generate a new strong key!
+        DEBUG=True # Set to False for production
+
+        POSTGRES_DB=meddata
+        POSTGRES_USER=meduser
+        POSTGRES_PASSWORD=your_strong_password_here # Use a strong password
+        DATABASE_HOST=db # Should match the service name in docker-compose.yml
+        DATABASE_PORT=5432
+        ```
+        *   Generate a `SECRET_KEY` using (if Python is installed locally):
             ```bash
             python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())'
             ```
-            (If Python is installed locally) or just create a long, random string. **NEVER use the default key in real projects!**
-        *   Set a strong database password instead of `your_strong_password`.
-        *   The other default values (`POSTGRES_DB`, `POSTGRES_USER`, `DATABASE_HOST`, `DATABASE_PORT`, `DEBUG=True`) can usually be kept for local development.
+        *   **Never use default or weak keys/passwords in production!**
 
 3.  **Build and Run Containers:**
-    This command will build the Docker images for the backend and frontend (if they don't exist) and start all services (`db`, `backend`, `frontend`) in detached mode.
+    This command builds/rebuilds images and starts all services (`db`, `backend`, `frontend`).
     ```bash
     docker compose up -d --build
     ```
-    The first run might take some time to download base images and install dependencies.
+    The first run might take some time.
 
 4.  **Initialize the Database:**
-    *   Apply Django migrations to create the necessary tables in the PostgreSQL database:
+    *   Apply Django migrations:
         ```bash
         docker compose exec backend python manage.py migrate
         ```
-    *   Create a superuser to access the Django Admin interface:
+    *   Create a superuser (for Django Admin access):
         ```bash
         docker compose exec backend python manage.py createsuperuser
         ```
-        (Follow the prompts in the terminal to enter a username, email, and password).
+        (Follow the prompts).
 
-## Seeding Test Data (via Django Admin)
+## Initial Data Setup (Optional but Recommended)
 
-After successfully starting the application and initializing the database, you can populate it with test data to verify functionality.
+For the application to be useful, you need some reference data:
 
-1.  **Log in to Django Admin:**
-    *   Open your browser to: `http://localhost:8000/admin/`
-    *   Use the superuser credentials created in the previous step.
-
+1.  **Log in to Django Admin:** `http://localhost:8000/admin/` (use superuser credentials).
 2.  **Add Parameter Codes (`ParameterCode`):**
-    *   Navigate to "CORE" -> "Parameter Codes".
-    *   Click "Add Parameter code".
-    *   Add several indicators, for example:
-        *   Code: `HB`, Name: `Hemoglobin`, Unit: `g/L`
-        *   Code: `TEMP`, Name: `Body Temperature`, Unit: `°C`
-        *   Code: `WEIGHT`, Name: `Weight`, Unit: `kg`
-        *   Code: `KARNOFSKY`, Name: `Karnofsky Score`, Unit: `points`
-        *   ... and others as needed.
-    *   Save each one.
+    *   Navigate to "CORE" -> "Коды показателей".
+    *   Add essential indicators (e.g., 'HB' - Гемоглобин, 'WEIGHT' - Вес, 'TEMP' - Температура, 'KARNOFSKY' - Шкала Карновского).
+    *   **Crucially, set the "Числовой?" (`is_numeric`) flag correctly** for each parameter. This flag determines if the parameter's values will be used for chart generation.
+3.  **Add ICD Codes (`MKBCode`):**
+    *   Navigate to "CORE" -> "Коды МКБ".
+    *   Add relevant diagnosis codes (e.g., 'C71.0'). *(Ideally, implement bulk loading later).*
 
-3.  **Add ICD Codes (`MKBCode`) (if implemented):**
-    *   Navigate to "CORE" -> "MKB Codes".
-    *   Click "Add MKB code".
-    *   Add a few diagnoses, for example:
-        *   Code: `C71.0`, Name: `Malignant neoplasm of cerebrum, except lobes and ventricles`
-        *   Code: `C40.2`, Name: `Malignant neoplasm of long bones of lower limb`
-    *   Save each one. *(Ideally, there should be a command for bulk loading).*
+## Using the Application
 
-4.  **Add Patients (`Patient`):**
-    *   Navigate to "CORE" -> "Patients".
-    *   Click "Add Patient".
-    *   Add 2-3 test patients, providing First Name, Last Name, Date of Birth, and selecting the "Primary diagnosis (MKB)" from the list (if the ForeignKey/autocomplete is implemented). Examples:
-        *   Ivanov Ivan Ivanovich, 2010-05-15, Diagnosis: C71.0
-        *   Petrova Maria Sergeevna, 2008-11-22, Diagnosis: C40.2
-    *   Save each one. Note their IDs.
+1.  **Access Frontend:** Open `http://localhost:3000/` in your browser.
+2.  **Login:** Use the superuser credentials (or create other users via Admin/API). The login form should use the `/api/token/` endpoint.
+3.  **Navigate:** Go to the patient list (`/patients`) and select a patient or create a new one.
+4.  **Patient Detail Page (`/patients/<id>`):**
+    *   View patient information.
+    *   View existing hospitalization episodes and observations.
+    *   **Add New Episode:** Use the "Добавить эпизод" form.
+    *   **Add New Observation:** Use the "Добавить наблюдение" form (select parameter, enter value, optionally select episode).
+    *   **View Dynamics:** Select one or more numeric parameters using the checkboxes to display their dynamics on the chart. The chart now supports multiple Y-axes for parameters with different scales (configure `getYAxisIdForParam` in `PatientDetailPage.tsx` if needed).
+    *   *(Functionality for adding/viewing Medical Tests might be present but needs similar UI integration)*.
 
-5.  **Add Observations (`Observation`):**
-    *   Navigate to "CORE" -> "Observations".
-    *   Click "Add Observation".
-    *   For different patients, add several observations for the parameter codes created earlier (`HB`, `WEIGHT`, etc.). **Make sure to:**
-        *   Select the correct Patient and Parameter.
-        *   Use **different Dates and Times (`Timestamp`)** for observations of the same parameter for a single patient to see the dynamics.
-        *   Fill in the **Value** field (e.g., '120', '45.5').
-        *   Fill in the **Value numeric** field with a number (e.g., 120, 45.5) for indicators that should be plotted on the chart.
-    *   Add at least 2-3 records for 1-2 parameters for 1-2 patients.
+## Accessing Services Directly
 
-## Accessing the Application
-
-*   **Frontend (Main App):** `http://localhost:3000/`
-*   **Django Admin:** `http://localhost:8000/admin/`
-*   **API (via DRF Browsable API if SessionAuthentication is enabled):** `http://localhost:8000/api/`
+*   **Frontend App:** `http://localhost:3000/`
+*   **Backend API (Browsable):** `http://localhost:8000/api/` (Requires login via Django session for browsable API if SessionAuthentication were enabled; JWT is used for app interaction).
+*   **Backend Admin:** `http://localhost:8000/admin/`
+*   **Database (e.g., via DBeaver/pgAdmin):** Host `localhost`, Port `5432`, Database `meddata`, User `meduser`, Password from `.env`.
 
 ## Stopping the Application
-
-To stop all running containers:
 
 ```bash
 docker compose down

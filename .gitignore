@@ -37,3 +37,24 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 # --- /Опционально ---
+
+mediafiles/
+# Python
+__pycache__/
+*.pyd
+db.sqlite3 # Если используете sqlite для тестов/разработки
+
+# Node
+node_modules/
+frontend/node_modules/ # Явно для фронтенда
+.npm
+
+# IDE / OS files
+*.swp
+*~
+
+# Docker
+docker-compose.override.yml
+
+# Media files (если не хотите их хранить в Git)
+# backend/mediafiles/
