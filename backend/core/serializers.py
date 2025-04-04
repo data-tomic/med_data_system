@@ -1,21 +1,146 @@
 # backend/core/serializers.py
 from rest_framework import serializers
-from django.contrib.auth import get_user_model # Лучше использовать get_user_model
+from django.contrib.auth import get_user_model
+from django.db import models # Импортируем models для Prefetch
 
 # --- Импорты моделей ---
-from .models import Patient, ParameterCode, Observation, MKBCode, MedicalTest, HospitalizationEpisode # Добавим Episode
+from .models import Patient, ParameterCode, Observation, MKBCode, MedicalTest, HospitalizationEpisode
 
-User = get_user_model() # Получаем активную модель пользователя
+User = get_user_model()
+
+# --- Сериализаторы для Справочников ---
+
+class MKBCodeSerializer(serializers.ModelSerializer):
+    """Сериализатор для кодов МКБ"""
+    class Meta:
+        model = MKBCode
+        fields = ('code', 'name')
+
+class ParameterCodeSerializer(serializers.ModelSerializer):
+    """Сериализатор для Кодов Показателей"""
+    class Meta:
+        model = ParameterCode
+        # Добавляем is_numeric, чтобы фронтенд мог знать, числовой ли параметр
+        fields = ['code', 'name', 'unit', 'description', 'is_numeric']
+
+
+# --- Основные Сериализаторы для CRUD ---
+
+class HospitalizationEpisodeSerializer(serializers.ModelSerializer):
+    """Сериализатор для Эпизодов госпитализации (для CRUD и списков)"""
+    # При записи ожидаем ID пациента
+    patient = serializers.PrimaryKeyRelatedField(queryset=Patient.objects.all())
+    # При чтении показываем строку пациента
+    patient_display = serializers.CharField(source='patient.__str__', read_only=True)
+
+    class Meta:
+        model = HospitalizationEpisode
+        fields = [
+            'id',
+            'patient', # ID для записи
+            'patient_display', # Строка для чтения
+            'start_date',
+            'end_date',
+            'created_at',
+            'updated_at', # Добавлено поле обновления
+        ]
+        read_only_fields = ['id', 'patient_display', 'created_at', 'updated_at']
+
+
+class ObservationSerializer(serializers.ModelSerializer):
+    """Сериализатор для Наблюдений (Observation) (для CRUD и списков)"""
+    # Позволяет записывать/читать параметр по его коду ('HB', 'TEMP')
+    parameter = serializers.SlugRelatedField(
+        queryset=ParameterCode.objects.all(),
+        slug_field='code'
+    )
+    # Ожидаем ID пациента при создании/обновлении
+    patient = serializers.PrimaryKeyRelatedField(queryset=Patient.objects.all())
+    # Эпизод по ID, необязательно
+    episode = serializers.PrimaryKeyRelatedField(queryset=HospitalizationEpisode.objects.all(), required=False, allow_null=True)
+
+    # Поля только для чтения для отображения связанной информации
+    patient_display = serializers.CharField(source='patient.__str__', read_only=True)
+    # Для отображения параметра можно добавить поле с деталями
+    parameter_details = ParameterCodeSerializer(source='parameter', read_only=True)
+    recorded_by_display = serializers.CharField(source='recorded_by.username', read_only=True, allow_null=True)
+    episode_display = serializers.CharField(source='episode.__str__', read_only=True, allow_null=True)
+
+    class Meta:
+        model = Observation
+        fields = [
+            'id',
+            'patient',            # ID для записи
+            'patient_display',    # Отображение для чтения
+            'parameter',          # Код ('HB') для записи/чтения
+            'parameter_details',  # Детали параметра для чтения
+            'value',              # Строковое значение
+            'value_numeric',      # Числовое значение (только чтение, заполняется в модели)
+            'timestamp',          # Дата и время
+            'episode',            # ID эпизода (опционально при записи/чтении)
+            'episode_display',    # Отображение эпизода для чтения
+            'recorded_by',        # ID пользователя (только чтение)
+            'recorded_by_display',# Имя пользователя (только чтение)
+        ]
+        # Устанавливаем поля, которые нельзя изменять через API напрямую
+        read_only_fields = [
+            'id', 'patient_display', 'parameter_details',
+            'value_numeric', # Заполняется автоматически в модели
+            'recorded_by', 'recorded_by_display', 'episode_display'
+        ]
+        # value_numeric не нужно указывать при создании/обновлении, он вычисляется в модели.
+
+    # Валидацию можно добавить здесь, если нужно
+
+
+class MedicalTestSerializer(serializers.ModelSerializer):
+    """Сериализатор для Медицинских тестов/Опросников (для CRUD и списков)"""
+    patient = serializers.PrimaryKeyRelatedField(queryset=Patient.objects.all())
+    uploaded_by = serializers.SlugRelatedField(slug_field='username', read_only=True, allow_null=True) # Отображаем username
+    patient_display = serializers.CharField(source='patient.__str__', read_only=True)
+    file_url = serializers.SerializerMethodField()
+    file_name = serializers.CharField(source='filename', read_only=True)
+
+    class Meta:
+        model = MedicalTest
+        fields = [
+            'id',
+            'patient',
+            'patient_display',
+            'test_name',
+            'test_date',
+            'uploaded_file', # Для ЗАПИСИ файла
+            'file_url',      # Для ЧТЕНИЯ URL
+            'file_name',     # Для ЧТЕНИЯ имени файла
+            'score',
+            'result_text',
+            'uploaded_by',   # Имя пользователя (только чтение)
+            'created_at',
+            'updated_at',    # Добавлено поле обновления
+        ]
+        read_only_fields = [
+            'id', 'patient_display', 'uploaded_by',
+            'file_url', 'file_name', 'created_at', 'updated_at'
+        ]
+        extra_kwargs = {
+            # write_only=True скрывает поле из GET-ответов
+            'uploaded_file': {'required': False, 'allow_null': True, 'write_only': True}
+        }
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.uploaded_file and request:
+            try:
+                return request.build_absolute_uri(obj.uploaded_file.url)
+            except ValueError: return None
+        return None
+
 
 class PatientSerializer(serializers.ModelSerializer):
-    """Сериализатор для модели Пациента"""
+    """Сериализатор для модели Пациента (для CRUD и списков)"""
     primary_diagnosis_mkb = serializers.SlugRelatedField(
-        queryset=MKBCode.objects.all(),
-        slug_field='code',
-        allow_null=True,
-        required=False
+        queryset=MKBCode.objects.all(), slug_field='code', allow_null=True, required=False
     )
-    # Опционально: Отображать имя вместо кода при чтении
     primary_diagnosis_mkb_name = serializers.CharField(source='primary_diagnosis_mkb.name', read_only=True, allow_null=True)
 
     class Meta:
@@ -34,130 +159,48 @@ class PatientSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'primary_diagnosis_mkb_name']
 
-class ParameterCodeSerializer(serializers.ModelSerializer):
-    """Сериализатор для Кодов Показателей"""
-    class Meta:
-        model = ParameterCode
-        fields = ['code', 'name', 'unit', 'description']
 
-class MKBCodeSerializer(serializers.ModelSerializer):
-    """Сериализатор для кодов МКБ"""
-    class Meta:
-        model = MKBCode
-        fields = ('code', 'name')
+# --- Сериализаторы СПЕЦИАЛЬНО для ResearchQueryView ---
 
-# --- ДОБАВЛЕН СЕРИАЛИЗАТОР ДЛЯ ЭПИЗОДОВ ---
-class HospitalizationEpisodeSerializer(serializers.ModelSerializer):
-    """Сериализатор для Эпизодов госпитализации"""
-    patient = serializers.PrimaryKeyRelatedField(queryset=Patient.objects.all())
-    patient_display = serializers.CharField(source='patient.__str__', read_only=True)
-
-    class Meta:
-        model = HospitalizationEpisode
-        fields = [
-            'id',
-            'patient',
-            'patient_display',
-            'start_date',
-            'end_date',
-            'created_at',
-        ]
-        read_only_fields = ['id', 'patient_display', 'created_at']
-# --- /СЕРИАЛИЗАТОР ДЛЯ ЭПИЗОДОВ ---
-
-class ObservationSerializer(serializers.ModelSerializer):
-    """Сериализатор для Наблюдений (Observation)"""
-    # Позволяет записывать параметр по его коду ('HB', 'TEMP', etc.)
-    parameter = serializers.SlugRelatedField(
-        queryset=ParameterCode.objects.all(),
-        slug_field='code'
-    )
-    # Ожидаем ID пациента при создании/обновлении
-    patient = serializers.PrimaryKeyRelatedField(queryset=Patient.objects.all())
-    # Опционально: Эпизод (пока необязательно)
-    episode = serializers.PrimaryKeyRelatedField(queryset=HospitalizationEpisode.objects.all(), required=False, allow_null=True)
-
-    # Поля только для чтения для отображения связанной информации
-    patient_display = serializers.CharField(source='patient.__str__', read_only=True)
-    parameter_display = serializers.CharField(source='parameter.__str__', read_only=True)
-    # Отображаем username пользователя, который записал
-    recorded_by_display = serializers.CharField(source='recorded_by.username', read_only=True, allow_null=True)
-    # Отображаем информацию об эпизоде, если он есть
-    episode_display = serializers.CharField(source='episode.__str__', read_only=True, allow_null=True)
-
+class SimpleObservationSerializer(serializers.ModelSerializer):
+    """Упрощенный сериализатор для отдельного наблюдения в результатах исследования"""
+    # Получаем нужные поля из связанного параметра
+    parameter_code = serializers.CharField(source='parameter.code')
+    parameter_name = serializers.CharField(source='parameter.name')
+    unit = serializers.CharField(source='parameter.unit', allow_null=True)
 
     class Meta:
         model = Observation
         fields = [
-            'id',
-            'patient',            # ID для записи
-            'patient_display',    # Отображение для чтения
-            'parameter',          # Код ('HB') для записи
-            'parameter_display',  # Отображение для чтения
-            'value',              # Строковое значение
-            'value_numeric',      # Числовое значение (может быть null)
-            'timestamp',          # Дата и время
-            'episode',            # ID эпизода (опционально)
-            'episode_display',    # Отображение эпизода для чтения
-            'recorded_by',        # ID пользователя (только чтение)
-            'recorded_by_display',# Имя пользователя (только чтение)
+            'parameter_code',
+            'parameter_name',
+            'unit',
+            'timestamp',
+            'value',
+            'value_numeric',
+            'episode', # Возвращаем ID эпизода
         ]
-        read_only_fields = [
-            'id', 'patient_display', 'parameter_display',
-            'recorded_by', 'recorded_by_display', 'episode_display'
-        ]
+        # Все поля только для чтения в этом контексте
 
-    # Можно добавить валидацию, если необходимо
-    # def validate(self, data):
-    #     # Пример: проверить, что timestamp не в будущем
-    #     if 'timestamp' in data and data['timestamp'] > timezone.now():
-    #         raise serializers.ValidationError("Timestamp cannot be in the future.")
-    #     return data
 
-class MedicalTestSerializer(serializers.ModelSerializer):
-    """Сериализатор для Медицинских тестов/Опросников"""
-    patient = serializers.PrimaryKeyRelatedField(queryset=Patient.objects.all())
-    # Отображаем пользователя по ID (только для чтения, будет устанавливаться во View)
-    uploaded_by = serializers.PrimaryKeyRelatedField(read_only=True, source='uploaded_by.username', allow_null=True) # Можно сразу username
-    patient_display = serializers.CharField(source='patient.__str__', read_only=True)
-    # URL для скачивания файла
-    file_url = serializers.SerializerMethodField()
-    file_name = serializers.CharField(source='filename', read_only=True)
+class ResearchPatientSerializer(serializers.ModelSerializer):
+    """Сериализатор для пациента с отфильтрованными наблюдениями для исследований"""
+    # Используем атрибут 'filtered_observations', созданный через Prefetch во View
+    # и SimpleObservationSerializer для форматирования каждого наблюдения
+    observations = SimpleObservationSerializer(source='filtered_observations', many=True, read_only=True)
+    primary_diagnosis_code = serializers.CharField(source='primary_diagnosis_mkb.code', allow_null=True, read_only=True)
 
     class Meta:
-        model = MedicalTest
+        model = Patient
+        # Включаем поля пациента и список его отфильтрованных наблюдений
         fields = [
             'id',
-            'patient',
-            'patient_display',
-            'test_name',
-            'test_date',
-            'uploaded_file', # Используется для ЗАПИСИ файла
-            'file_url',      # Генерируется для ЧТЕНИЯ
-            'file_name',     # Генерируется для ЧТЕНИЯ
-            'score',
-            'result_text',
-            'uploaded_by',   # Имя пользователя (только чтение)
-            'created_at',
+            'last_name',
+            'first_name',
+            'middle_name',
+            'date_of_birth',
+            'clinic_id',
+            'primary_diagnosis_code',
+            'observations',
         ]
-        read_only_fields = [
-            'id', 'patient_display', 'uploaded_by',
-            'file_url', 'file_name', 'created_at'
-        ]
-        # Делаем поле файла необязательным при обновлении (чтобы не требовать его повторную загрузку)
-        # и не обязательным в принципе (может быть тест без файла)
-        extra_kwargs = {
-            'uploaded_file': {'required': False, 'allow_null': True, 'write_only': True} # write_only чтобы не показывать в ответе сырое поле
-        }
-
-    def get_file_url(self, obj):
-        request = self.context.get('request')
-        if obj.uploaded_file and request:
-            try:
-                # Генерируем абсолютный URL
-                url = request.build_absolute_uri(obj.uploaded_file.url)
-                return url
-            except ValueError:
-                # Может случиться, если файл был удален или недоступен
-                return None
-        return None
+        read_only_fields = fields # Весь сериализатор только для чтения

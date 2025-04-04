@@ -4,259 +4,206 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
+# --- ИЗМЕНЕНИЕ: Импортируем необходимые классы для DRF CSV Renderer ---
+from rest_framework.settings import api_settings
+from rest_framework_csv.renderers import CSVRenderer
+# -------------------------------------------------------------------
+from django.db.models import Q, Prefetch
 from django.utils import timezone
-from datetime import timedelta
-from django.shortcuts import get_object_or_404
-# Опционально: для удобной фильтрации
-# from django_filters.rest_framework import DjangoFilterBackend
+from datetime import datetime, timedelta
+# --- УБИРАЕМ ИМПОРТЫ ДЛЯ РУЧНОЙ ГЕНЕРАЦИИ CSV ---
+# from django.http import HttpResponse
+# import csv
+# import io
+# --------------------------------------------------
 
 # --- Импорты моделей и сериализаторов ---
 from .models import (
-    Patient, ParameterCode, Observation, MKBCode, MedicalTest, HospitalizationEpisode # <- Добавлен HospitalizationEpisode
+    Patient, ParameterCode, Observation, MKBCode, MedicalTest, HospitalizationEpisode
 )
+# Импортируем ВСЕ сериализаторы, включая новые для Research
 from .serializers import (
     PatientSerializer,
     ParameterCodeSerializer,
     ObservationSerializer,
     MKBCodeSerializer,
     MedicalTestSerializer,
-    HospitalizationEpisodeSerializer # <- Добавлен импорт
+    HospitalizationEpisodeSerializer,
+    ResearchPatientSerializer,
+    SimpleObservationSerializer # <- Теперь он нужен для подготовки данных для CSV рендерера
 )
 
+# --- ViewSet'ы для CRUD операций (без изменений) ---
 
 class PatientViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet для работы с Пациентами.
-    Включает actions для получения динамики и списка тестов.
-    """
     queryset = Patient.objects.all().select_related('primary_diagnosis_mkb').order_by('last_name', 'first_name')
     serializer_class = PatientSerializer
     permission_classes = [permissions.IsAuthenticated]
-    # Добавляем поиск по ФИО и ID клиники
     filter_backends = [filters.SearchFilter]
     search_fields = ['last_name', 'first_name', 'middle_name', 'clinic_id']
 
     @action(detail=True, methods=['get'], url_path='dynamics')
     def get_patient_dynamics(self, request, pk=None):
-        """
-        Возвращает динамику показателей для конкретного пациента.
-        Принимает коды параметров в ?param=CODE1¶m=CODE2
-        """
         patient = self.get_object()
-        parameter_codes = request.query_params.getlist('param') # Получаем список кодов
-        if not parameter_codes:
-            return Response(
-                {"error": "Query parameter 'param' is required with at least one parameter code."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        # Фильтруем наблюдения по пациенту и списку кодов параметров, сортируем по времени
-        observations = Observation.objects.filter(
-            patient=patient,
-            parameter__code__in=parameter_codes
-        ).select_related('parameter').order_by('timestamp') # Добавим select_related для оптимизации
-
-        # Можно добавить фильтрацию по дате, если нужно
-        # start_date = request.query_params.get('start_date')
-        # end_date = request.query_params.get('end_date')
-        # if start_date: observations = observations.filter(timestamp__gte=start_date)
-        # if end_date: observations = observations.filter(timestamp__lte=end_date)
-
-        serializer = ObservationSerializer(observations, many=True, context={'request': request}) # Передаем контекст
+        parameter_codes = request.query_params.getlist('param')
+        if not parameter_codes: return Response({"error": "Query parameter 'param' is required."}, status=status.HTTP_400_BAD_REQUEST)
+        observations_qs = Observation.objects.filter(patient=patient, parameter__code__in=parameter_codes, parameter__is_numeric=True).select_related('parameter').order_by('timestamp')
+        serializer = ObservationSerializer(observations_qs, many=True, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=['get'], url_path='tests')
     def get_patient_tests(self, request, pk=None):
-        """
-        Возвращает список медицинских тестов для конкретного пациента.
-        """
         patient = self.get_object()
-        tests = MedicalTest.objects.filter(patient=patient).select_related('uploaded_by').order_by('-test_date') # Оптимизация
+        tests = MedicalTest.objects.filter(patient=patient).select_related('uploaded_by').order_by('-test_date')
         serializer = MedicalTestSerializer(tests, many=True, context={'request': request})
         return Response(serializer.data)
 
-    # --- НОВЫЙ Action для получения эпизодов пациента ---
-    # URL: /api/patients/{pk}/episodes/
     @action(detail=True, methods=['get'], url_path='episodes')
     def get_patient_episodes(self, request, pk=None):
-        """
-        Возвращает список эпизодов госпитализации для конкретного пациента.
-        """
         patient = self.get_object()
         episodes = HospitalizationEpisode.objects.filter(patient=patient).order_by('-start_date')
         serializer = HospitalizationEpisodeSerializer(episodes, many=True, context={'request': request})
         return Response(serializer.data)
-    # --- /НОВЫЙ Action ---
 
 
+class ObservationViewSet(viewsets.ModelViewSet):
+    serializer_class = ObservationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_queryset(self):
+        queryset = Observation.objects.all().select_related('patient', 'parameter', 'recorded_by', 'episode')
+        patient_id = self.request.query_params.get('patient_id')
+        parameter_code = self.request.query_params.get('parameter_code')
+        episode_id = self.request.query_params.get('episode_id')
+        if not patient_id: return queryset.none() # Требуем patient_id для списка
+        queryset = queryset.filter(patient_id=patient_id)
+        if parameter_code: queryset = queryset.filter(parameter__code=parameter_code)
+        if episode_id: queryset = queryset.filter(episode_id=episode_id)
+        return queryset.order_by('-timestamp')
+    def perform_create(self, serializer): serializer.save(recorded_by=self.request.user)
+
+
+class HospitalizationEpisodeViewSet(viewsets.ModelViewSet):
+    serializer_class = HospitalizationEpisodeSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_queryset(self):
+        queryset = HospitalizationEpisode.objects.all().select_related('patient')
+        patient_id = self.request.query_params.get('patient_id')
+        if patient_id: queryset = queryset.filter(patient_id=patient_id)
+        return queryset.order_by('-start_date')
+
+
+class MedicalTestViewSet(viewsets.ModelViewSet):
+    queryset = MedicalTest.objects.all().select_related('patient', 'uploaded_by').order_by('-test_date')
+    serializer_class = MedicalTestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser)
+    def perform_create(self, serializer): serializer.save(uploaded_by=self.request.user)
+    def get_serializer_context(self): context = super().get_serializer_context(); context.update({"request": self.request}); return context
+    def get_queryset(self): queryset = super().get_queryset(); patient_id = self.request.query_params.get('patient_id'); return queryset.filter(patient_id=patient_id) if patient_id else queryset
+
+
+# --- Views для Справочников (без изменений) ---
 class ParameterCodeListView(generics.ListAPIView):
-    """Возвращает список всех кодов параметров."""
     queryset = ParameterCode.objects.all().order_by('name')
     serializer_class = ParameterCodeSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-
-class ResearchQueryView(APIView):
-    """
-    Эндпоинт для формирования исследовательских выборок.
-    Пока фильтрует только пациентов. Требует доработки для выборки параметров.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, *args, **kwargs):
-        queryset = Patient.objects.all().select_related('primary_diagnosis_mkb') # Оптимизация
-        diagnosis_mkb = request.query_params.get('diagnosis_mkb', None)
-        age_min_str = request.query_params.get('age_min', None)
-        age_max_str = request.query_params.get('age_max', None)
-
-        if diagnosis_mkb:
-            # Ищем по точному коду или можно использовать __icontains для частичного совпадения
-            queryset = queryset.filter(primary_diagnosis_mkb__code__iexact=diagnosis_mkb)
-
-        today = timezone.now().date()
-        if age_min_str:
-            try:
-                age_min = int(age_min_str)
-                # Самая поздняя дата рождения для минимального возраста
-                latest_birth_date = today - timedelta(days=age_min * 365.25)
-                queryset = queryset.filter(date_of_birth__lte=latest_birth_date)
-            except ValueError:
-                return Response({"error": "'age_min' must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
-        if age_max_str:
-            try:
-                age_max = int(age_max_str)
-                # Самая ранняя дата рождения для максимального возраста
-                earliest_birth_date = today - timedelta(days=(age_max + 1) * 365.25) + timedelta(days=1)
-                queryset = queryset.filter(date_of_birth__gte=earliest_birth_date)
-            except ValueError:
-                return Response({"error": "'age_max' must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # TODO: Добавить логику для выборки и возврата КОНКРЕТНЫХ ПАРАМЕТРОВ/НАБЛЮДЕНИЙ для этих пациентов
-
-        serializer = PatientSerializer(queryset, many=True, context={'request': request})
-        return Response(serializer.data)
-
-
 class MKBCodeSearchView(generics.ListAPIView):
-    """Возвращает список кодов МКБ с возможностью поиска."""
     queryset = MKBCode.objects.all().order_by('code')
     serializer_class = MKBCodeSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.SearchFilter]
-    search_fields = ['code', 'name'] # Поиск по коду и названию
+    search_fields = ['code', 'name']
 
 
-class MedicalTestViewSet(viewsets.ModelViewSet):
+# --- ИЗМЕНЕННЫЙ ResearchQueryView с использованием CSVRenderer ---
+class ResearchQueryView(APIView):
     """
-    ViewSet для работы с Медицинскими тестами.
-    Обрабатывает загрузку файлов.
+    Формирует выборку пациентов и их наблюдений по заданным критериям.
+    Использует стандартные рендереры DRF (включая CSVRenderer)
+    для вывода в JSON или CSV в зависимости от Accept хедера или ?format=csv.
     """
-    queryset = MedicalTest.objects.all().select_related('patient', 'uploaded_by').order_by('-test_date')
-    serializer_class = MedicalTestSerializer
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = (MultiPartParser, FormParser) # Для обработки файлов
+    # Указываем поддерживаемые рендереры. Если CSVRenderer добавлен в DEFAULT_RENDERER_CLASSES,
+    # эту строку можно убрать. Но явное указание надежнее.
+    renderer_classes = api_settings.DEFAULT_RENDERER_CLASSES + [CSVRenderer]
 
-    def perform_create(self, serializer):
-        """Устанавливаем текущего пользователя как 'uploaded_by'."""
-        serializer.save(uploaded_by=self.request.user)
+    def get(self, request, *args, **kwargs):
+        # 1. Получение и валидация параметров (как было, БЕЗ format)
+        diagnosis_mkb = request.query_params.get('diagnosis_mkb', None)
+        age_min_str = request.query_params.get('age_min', None)
+        age_max_str = request.query_params.get('age_max', None)
+        param_codes = request.query_params.getlist('param_codes')
+        start_date_str = request.query_params.get('start_date', None)
+        end_date_str = request.query_params.get('end_date', None)
 
-    def get_serializer_context(self):
-        """Передаем request в контекст для генерации file_url."""
-        context = super().get_serializer_context()
-        context.update({"request": self.request})
-        return context
+        if not param_codes:
+            return Response({"error": "Query parameter 'param_codes' is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    def get_queryset(self):
-        """
-        Фильтруем тесты по ID пациента, если он передан в query параметрах.
-        Иначе возвращаем все (или пустой список/ошибку, если требуется строгость).
-        """
-        queryset = super().get_queryset() # Получаем базовый queryset
-        patient_id = self.request.query_params.get('patient_id')
-        if patient_id:
-            queryset = queryset.filter(patient_id=patient_id)
-        # else:
-            # Вернуть пустой queryset, если ID пациента обязателен для листинга
-            # return queryset.none()
-        return queryset
+        # 2. Фильтрация Пациентов (как было)
+        patient_qs = Patient.objects.all().select_related('primary_diagnosis_mkb')
+        if diagnosis_mkb: patient_qs = patient_qs.filter(primary_diagnosis_mkb__code__iexact=diagnosis_mkb)
+        today = timezone.now().date()
+        try:
+            if age_min_str: patient_qs = patient_qs.filter(date_of_birth__lte=today - timedelta(days=int(age_min_str) * 365.25))
+            if age_max_str: patient_qs = patient_qs.filter(date_of_birth__gte=today - timedelta(days=(int(age_max_str) + 1) * 365.25) + timedelta(days=1))
+        except (ValueError, TypeError): return Response({"error": "Age parameters must be integers."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # 3. Подготовка фильтра для Наблюдений (как было)
+        observation_filter = Q(parameter__code__in=param_codes)
+        try:
+            if start_date_str: observation_filter &= Q(timestamp__date__gte=datetime.strptime(start_date_str, '%Y-%m-%d').date())
+            if end_date_str: observation_filter &= Q(timestamp__date__lte=datetime.strptime(end_date_str, '%Y-%m-%d').date())
+        except ValueError: return Response({"error": "Invalid date format (use YYYY-MM-DD)."}, status=status.HTTP_400_BAD_REQUEST)
 
-# --- НОВЫЙ ViewSet ДЛЯ Observation ---
-class ObservationViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet для работы с Наблюдениями (показателями).
-    Требует фильтрации по 'patient_id' при запросе списка.
-    """
-    serializer_class = ObservationSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    # Опционально: Включить фильтры, если используется django-filter
-    # filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    # filterset_fields = ['patient', 'parameter', 'episode']
-    # ordering_fields = ['timestamp', 'parameter__name']
-    # ordering = ['-timestamp'] # Сортировка по умолчанию
+        # 4. Выполнение запроса с Prefetch (как было)
+        patients_with_observations = patient_qs.prefetch_related(
+            Prefetch(
+                'observations',
+                queryset=Observation.objects.filter(observation_filter).order_by('timestamp').select_related('parameter', 'episode'),
+                to_attr='filtered_observations'
+            )
+        ).order_by('last_name', 'first_name')
 
-    def get_queryset(self):
-        """
-        Фильтруем наблюдения по ID пациента, ID параметра или ID эпизода,
-        если они переданы в query параметрах.
-        """
-        # Оптимизация запроса за счет подгрузки связанных данных
-        queryset = Observation.objects.all().select_related(
-            'patient', 'parameter', 'recorded_by', 'episode'
-        )
+        # 5. Подготовка данных для рендерера (Преобразование в плоский список)
+        results_list = []
+        # Определяем заголовки динамически на основе первого пациента/наблюдения или статически
+        # (CSVRenderer использует ключи первого словаря по умолчанию)
+        for patient in patients_with_observations:
+            patient_info = { # Используем ResearchPatientSerializer для получения нужных полей пациента
+                'patient_id': patient.id,
+                'last_name': patient.last_name,
+                'first_name': patient.first_name,
+                'middle_name': patient.middle_name,
+                'date_of_birth': patient.date_of_birth.strftime('%Y-%m-%d') if patient.date_of_birth else '',
+                'clinic_id': patient.clinic_id,
+                'primary_diagnosis_code': patient.primary_diagnosis_mkb.code if patient.primary_diagnosis_mkb else '',
+            }
+            if not hasattr(patient, 'filtered_observations') or not patient.filtered_observations:
+                 # Если нет наблюдений, добавляем только инфо о пациенте
+                 results_list.append(patient_info)
+            else:
+                for obs in patient.filtered_observations:
+                    # Используем SimpleObservationSerializer для получения нужных полей наблюдения
+                    obs_info = {
+                        'observation_timestamp': obs.timestamp.isoformat() if obs.timestamp else '',
+                        'parameter_code': obs.parameter.code if obs.parameter else '',
+                        'parameter_name': obs.parameter.name if obs.parameter else '',
+                        'unit': obs.parameter.unit if obs.parameter and obs.parameter.unit else '',
+                        'value': obs.value,
+                        'value_numeric': obs.value_numeric,
+                        'episode_id': obs.episode.id if obs.episode else '',
+                    }
+                    # Объединяем инфо о пациенте и наблюдении
+                    results_list.append({**patient_info, **obs_info})
 
-        patient_id = self.request.query_params.get('patient_id')
-        parameter_code = self.request.query_params.get('parameter_code')
-        episode_id = self.request.query_params.get('episode_id')
-
-        if patient_id:
-            queryset = queryset.filter(patient_id=patient_id)
-        # else:
-            # Если не передан patient_id, вернуть пустой список или ошибку
-            # return queryset.none()
-            # Или оставить так, если нужно иметь возможность получать ВСЕ наблюдения (осторожно!)
-
-        if parameter_code:
-            queryset = queryset.filter(parameter__code=parameter_code)
-        if episode_id:
-            queryset = queryset.filter(episode_id=episode_id)
-
-        # Всегда сортируем по времени (сначала новые)
-        return queryset.order_by('-timestamp')
-
-    def perform_create(self, serializer):
-        """Устанавливаем текущего пользователя как recorded_by."""
-        serializer.save(recorded_by=self.request.user)
-# --- /НОВЫЙ ViewSet ДЛЯ Observation ---
-
-
-# --- НОВЫЙ ViewSet ДЛЯ HospitalizationEpisode ---
-class HospitalizationEpisodeViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet для работы с Эпизодами госпитализации.
-    """
-    serializer_class = HospitalizationEpisodeSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    # Опционально: Фильтрация
-    # filter_backends = [DjangoFilterBackend]
-    # filterset_fields = ['patient']
-
-    def get_queryset(self):
-        """
-        Фильтруем эпизоды по ID пациента, если он передан в query параметрах.
-        """
-        queryset = HospitalizationEpisode.objects.all().select_related('patient')
-
-        patient_id = self.request.query_params.get('patient_id')
-        if patient_id:
-            queryset = queryset.filter(patient_id=patient_id)
-        # else:
-            # Можно вернуть пустой список, если patient_id обязателен
-            # return queryset.none()
-
-        return queryset.order_by('-start_date') # Сортируем по дате начала (сначала новые)
-
-    # perform_create здесь не нужен, если нет дополнительной логики
-    # def perform_create(self, serializer):
-    #     # Можно добавить логику, например, проверку пересечения дат с другими эпизодами
-    #     super().perform_create(serializer)
-# --- /НОВЫЙ ViewSet ДЛЯ HospitalizationEpisode ---
+        # 6. Возвращаем данные. DRF сам выберет рендерер (JSON или CSV)
+        # на основе Accept хедера или параметра ?format=csv
+        # CSVRenderer ожидает список словарей.
+        # JSONRenderer по умолчанию обработает список словарей.
+        # Если бы мы хотели сохранить вложенную структуру для JSON,
+        # нужно было бы использовать ResearchPatientSerializer:
+        # serializer = ResearchPatientSerializer(patients_with_observations, many=True, context={'request': request})
+        # return Response(serializer.data)
+        # Но для совместимости с CSVRenderer возвращаем плоский список:
+        return Response(results_list)

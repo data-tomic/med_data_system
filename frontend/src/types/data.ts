@@ -82,6 +82,21 @@ export interface MedicalTestData {
   created_at?: string; // ISO строка даты-времени
 }
 
+export interface SimpleObservationData {
+    parameter_code: string;
+    parameter_name?: string;
+    unit?: string | null;
+    timestamp: string;
+    value: string;
+    value_numeric?: number | null;
+    episode?: number | null;
+}
+
+export interface ResearchPatientData extends Omit<PatientDetails, 'primary_diagnosis_mkb' | 'primary_diagnosis_mkb_name'> {
+    primary_diagnosis_code?: string | null;
+    observations: SimpleObservationData[];
+}
+
 // Вы можете добавить другие общие типы здесь, если они понадобятся
 // Например, для данных пользователя после логина:
 // export interface UserProfile {
